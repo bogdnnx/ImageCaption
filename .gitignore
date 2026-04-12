@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+static/uploads/*
+!static/uploads/.gitkeep
+.venv/
+*.egg-info/
+dist/
+build/
+.idea/
+.vscode/
