@@ -46,7 +46,6 @@ services:
     volumes:
       - .:/app
       - uploads:/app/static/uploads
-      # Кэш моделей HuggingFace — чтобы не скачивать каждый раз
       - hf_cache:/root/.cache/huggingface
     env_file: .env
     depends_on:
