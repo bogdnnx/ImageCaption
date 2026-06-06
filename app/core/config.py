@@ -16,9 +16,11 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
+    OLLAMA_URL: str = "http://ollama:11434"
+    OLLAMA_TIMEOUT: float = 180.0
+
     # ML
-    MODEL_NAME: str = "Salesforce/blip2-opt-2.7b"
-    DEVICE: str = "cpu"
+    MODEL_NAME: str = "qwen2.5vl:3b"
 
     # Storage
     UPLOAD_DIR: str = "static/uploads"

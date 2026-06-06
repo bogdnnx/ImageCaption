@@ -1,4 +1,19 @@
 services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "ollama", "list" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      - OLLAMA_KEEP_ALIVE=-1
+
   db:
     image: postgres:16-alpine
     environment:
@@ -6,7 +21,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "5437:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -18,7 +33,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6377:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -46,17 +61,12 @@ services:
     volumes:
       - .:/app
       - uploads:/app/static/uploads
-      - hf_cache:/root/.cache/huggingface
     env_file: .env
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 8G
 
   # Мониторинг задач Celery (опционально)
   flower:
@@ -73,3 +83,4 @@ volumes:
   pgdata:
   uploads:
   hf_cache:
+  ollama_data:

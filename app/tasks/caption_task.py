@@ -1,80 +1,52 @@
-"""
-Celery-задача генерации описания.
-
-Работает в отдельном процессе (worker), синхронно:
-  1. Обновляет статус → PROCESSING
-  2. Вызывает ML-сервис
-  3. Обновляет статус → COMPLETED / FAILED
-
-Для доступа к БД используем синхронный SQLAlchemy —
-Celery worker не async.
-"""
-
-import logging
+from celery import shared_task
 from datetime import datetime, timezone
+import logging
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
-from app.core.config import settings
+from app.core.database import sync_session
 from app.models.models import Caption, TaskStatus
 from app.services.captioning import generate_caption
-from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-# Синхронный движок для Celery worker
-SYNC_DB_URL = settings.DATABASE_URL.replace("+asyncpg", "+psycopg2")
-sync_engine = create_engine(SYNC_DB_URL)
 
-
-def get_sync_session() -> Session:
-    return Session(sync_engine)
-
-
-@celery_app.task(bind=True, name="generate_caption", max_retries=2)
-def generate_caption_task(self, caption_id: str, image_path: str, model_name: str):
-    """Генерирует описание для изображения и обновляет запись в БД."""
-
-    session = get_sync_session()
-    try:
-        caption = session.get(Caption, caption_id)
+@shared_task(name="generate_caption", bind=True, max_retries=3, default_retry_delay=30)
+def generate_caption_task(
+    self,
+    caption_id: str,
+    image_path: str,
+    model_name: str | None = None,
+    user_prompt: str | None = None,
+):
+    """Генерирует caption и обновляет запись в БД."""
+    with sync_session() as db:
+        caption = db.get(Caption, caption_id)
         if not caption:
-            logger.error(f"Caption {caption_id} не найден в БД")
+            logger.error(f"Caption {caption_id} не найден")
             return
 
-        # Обновляем статус
-        caption.status = TaskStatus.PROCESSING
-        session.commit()
+        try:
+            caption.status = TaskStatus.PROCESSING
+            db.commit()
 
-        # Генерируем описание
-        result = generate_caption(image_path, model_name)
+            result = generate_caption(
+                image_path=image_path,
+                model_name=model_name,
+                user_prompt=user_prompt,
+            )
 
-        # Сохраняем результат
-        caption.text = result["caption"]
-        caption.processing_time_ms = result["processing_time_ms"]
-        caption.status = TaskStatus.COMPLETED
-        caption.completed_at = datetime.now(timezone.utc)
-        session.commit()
+            caption.text = result["caption"]
+            caption.processing_time_ms = result["processing_time_ms"]
+            caption.model_name = result["model_name"]
+            caption.status = TaskStatus.COMPLETED
+            caption.completed_at = datetime.now(timezone.utc)
+            db.commit()
 
-        logger.info(
-            f"Caption {caption_id}: '{result['caption'][:50]}...' "
-            f"({result['processing_time_ms']}ms)"
-        )
+            logger.info(f"Caption {caption_id} готов ({result['processing_time_ms']}ms)")
+            return {"caption_id": caption_id, "status": "completed"}
 
-    except Exception as exc:
-        session.rollback()
-
-        # Пишем ошибку в БД
-        if caption:
+        except Exception as exc:
+            logger.error(f"Ошибка генерации caption {caption_id}", exc_info=True)
             caption.status = TaskStatus.FAILED
             caption.error_message = str(exc)[:500]
-            session.commit()
-
-        logger.exception(f"Ошибка генерации caption {caption_id}")
-
-        # Ретрай через Celery
-        raise self.retry(exc=exc, countdown=30)
-
-    finally:
-        session.close()
+            db.commit()
+            raise self.retry(exc=exc)
