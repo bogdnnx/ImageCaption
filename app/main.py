@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Image Captioning API",
     description="Веб-сервис генерации текстовых описаний к изображениям на основе Vision Transformers (BLIP-2)",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
