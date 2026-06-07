@@ -16,6 +16,23 @@ const api = {
     return res.json();
   },
 
+  async register(username, email, password) {
+    const res = await fetch(`${API_BASE}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, password }),
+    });
+    if (!res.ok) {
+      const detail = (await res.json().catch(() => ({}))).detail;
+      // FastAPI на 422 кладёт массив ошибок валидации
+      throw new Error(
+        Array.isArray(detail) ? detail.map(d => d.msg).join('; ')
+        : detail || 'Ошибка регистрации'
+      );
+    }
+    return res.json();
+  },
+
   async listModels(token) {
     const res = await fetch(`${API_BASE}/api/models/`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -87,18 +104,38 @@ const SPEED_COLORS = {
 
 // ── AUTH SCREEN ──────────────────────────────────────────────────────────────
 const LoginScreen = ({ onLogin }) => {
+  const [mode, setMode] = React.useState('login'); // 'login' | 'register'
   const [username, setUsername] = React.useState('');
+  const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
+  const [notice, setNotice] = React.useState('');
+
+  const isRegister = mode === 'register';
+
+  const switchMode = () => {
+    setMode(isRegister ? 'login' : 'register');
+    setError('');
+    setNotice('');
+  };
 
   const submit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setNotice('');
     try {
-      const data = await api.login(username, password);
-      onLogin(data.access_token, username);
+      if (isRegister) {
+        // 1. создаём пользователя
+        await api.register(username, email, password);
+        // 2. ручка не отдаёт токен — логинимся теми же кредами
+        const data = await api.login(username, password);
+        onLogin(data.access_token, username);
+      } else {
+        const data = await api.login(username, password);
+        onLogin(data.access_token, username);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -121,29 +158,57 @@ const LoginScreen = ({ onLogin }) => {
           </span>
         </div>
 
-        <div style={{ fontSize: 22, fontWeight: 600, marginBottom: 6 }}>Войти в аккаунт</div>
-        <div style={{ fontSize: 13, color: '#6a5f53', marginBottom: 24 }}>Playground для генерации описаний</div>
+        <div style={{ fontSize: 22, fontWeight: 600, marginBottom: 6 }}>
+          {isRegister ? 'Создать аккаунт' : 'Войти в аккаунт'}
+        </div>
+        <div style={{ fontSize: 13, color: '#6a5f53', marginBottom: 24 }}>
+          {isRegister ? 'Зарегистрируйтесь, чтобы начать' : 'Playground для генерации описаний'}
+        </div>
 
         <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <label style={loginStyles.label}>Имя пользователя</label>
-            <input style={loginStyles.input} value={username} onChange={e => setUsername(e.target.value)}
+            <input style={loginStyles.input} value={username}
+              onChange={e => setUsername(e.target.value)}
               placeholder="username" required autoFocus />
           </div>
+
+          {isRegister && (
+            <div>
+              <label style={loginStyles.label}>Email</label>
+              <input style={loginStyles.input} type="email" value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com" required />
+            </div>
+          )}
+
           <div>
             <label style={loginStyles.label}>Пароль</label>
             <input style={loginStyles.input} type="password" value={password}
-              onChange={e => setPassword(e.target.value)} placeholder="••••••••" required />
+              onChange={e => setPassword(e.target.value)}
+              placeholder="••••••••" required />
           </div>
 
           {error && (
             <div style={loginStyles.error}><span style={{ fontWeight: 600 }}>!</span> {error}</div>
           )}
+          {notice && (
+            <div style={loginStyles.notice}>{notice}</div>
+          )}
 
           <button style={loginStyles.btn} type="submit" disabled={loading}>
-            {loading ? 'Вход…' : 'Войти'}
+            {loading
+              ? (isRegister ? 'Создаём…' : 'Вход…')
+              : (isRegister ? 'Зарегистрироваться' : 'Войти')}
           </button>
         </form>
+
+        <div style={loginStyles.switchRow}>
+          {isRegister ? 'Уже есть аккаунт?' : 'Нет аккаунта?'}
+          <button type="button" style={loginStyles.switchBtn} onClick={switchMode}>
+            {isRegister ? 'Войти' : 'Зарегистрироваться'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -177,6 +242,19 @@ const loginStyles = {
     border: '1.5px solid #1E1914', borderRadius: 8, fontSize: 15,
     fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
     boxShadow: '3px 3px 0 #1E1914',
+  },
+  notice: {
+    padding: '10px 12px', background: '#E7F8D4', border: '1.5px solid #1E1914',
+    borderRadius: 8, fontSize: 13, color: '#3F6B1C',
+  },
+  switchRow: {
+    marginTop: 18, fontSize: 13, color: '#6a5f53',
+    display: 'flex', gap: 6, justifyContent: 'center', alignItems: 'center',
+  },
+  switchBtn: {
+    background: 'transparent', border: 'none', cursor: 'pointer',
+    fontSize: 13, fontWeight: 600, color: '#2F6BFF',
+    fontFamily: 'inherit', padding: 0, textDecoration: 'underline',
   },
 };
 

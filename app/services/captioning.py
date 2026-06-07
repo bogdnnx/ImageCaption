@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 
 from app.core.config import settings
+from app.utils.image_hash import compute_image_hash,cache_key
 
 logger = logging.getLogger(__name__)
 
