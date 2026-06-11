@@ -1,84 +1,106 @@
 """
-Сервис генерации описаний к изображениям.
+Сервис генерации описаний к изображениям через Ollama.
 
-Используем BLIP-2 (Salesforce) — Vision-Language модель,
-которая соединяет ViT (vision encoder) с LLM через Q-Former.
+Ollama запускает Qwen2.5-VL локально через llama.cpp с GGUF-квантизацией.
 
-Пайплайн:
-  1. ViT извлекает визуальные фичи из изображения
-  2. Q-Former сжимает их в набор query-токенов
-  3. LLM (OPT-2.7B) генерирует текстовое описание
-
-Для лёгкого деплоя можно переключиться на blip2-opt-2.7b (≈5GB VRAM)
-или blip-image-captioning-base (≈1GB, попроще).
+Поток данных:
+  image_path → base64 → POST /api/generate → JSON с описанием
 """
 
-import time
+import base64
 import logging
-from functools import lru_cache
+import time
+from pathlib import Path
 
-import torch
-from PIL import Image
-from transformers import Blip2Processor, Blip2ForConditionalGeneration
+import httpx
 
 from app.core.config import settings
+from app.utils.image_hash import compute_image_hash,cache_key
 
 logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=1)
-def load_model(model_name: str, device: str):
-    """
-    Загружает модель один раз и кэширует в памяти процесса.
-    Celery worker будет держать модель загруженной между задачами.
-    """
-    logger.info(f"Загружаю модель {model_name} на {device}...")
-    start = time.time()
+DEFAULT_PROMPT = (
+    "Опиши этот товар на русском языке"
+    "Выдели ключевые характеристики, материал и назначение."
+    "Сделай описание как для карточки товара"
+)
 
-    processor = Blip2Processor.from_pretrained(model_name)
-    model = Blip2ForConditionalGeneration.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16 if device != "cpu" else torch.float32,
+
+def _build_full_prompt(user_prompt: str | None) -> str:
+    """
+    Оборачиваем пользовательский запрос в системные инструкции,
+    чтобы модель не сваливалась в английский и не добавляла мусор.
+    """
+    user_request = (user_prompt or DEFAULT_PROMPT).strip()
+    return (
+        "Ты описываешь фотографии. Отвечай только на русском, "
+        "без markdown и вводных фраз."
+        f"Запрос пользователя: {user_request}"
     )
-    model.to(device)
-    model.eval()
-
-    elapsed = time.time() - start
-    logger.info(f"Модель загружена за {elapsed:.1f}s")
-    return processor, model
 
 
-def generate_caption(image_path: str, model_name: str | None = None) -> dict:
+def generate_caption(
+    image_path: str,
+    model_name: str | None = None,
+    user_prompt: str | None = None,
+) -> dict:
     """
-    Генерирует текстовое описание для изображения.
+    Генерирует текстовое описание для изображения через Ollama.
+
+    Args:
+        image_path: путь к изображению на диске
+        model_name: имя модели в Ollama (qwen2.5vl:7b и т.п.)
+        user_prompt: пользовательский запрос (что именно описать)
 
     Returns:
         {"caption": str, "processing_time_ms": int, "model_name": str}
     """
     model_name = model_name or settings.MODEL_NAME
-    device = settings.DEVICE
+    full_prompt = _build_full_prompt(user_prompt)
 
-    processor, model = load_model(model_name, device)
+    # Читаем файл и кодируем в base64
+    image_bytes = Path(image_path).read_bytes()
+    image_b64 = base64.b64encode(image_bytes).decode()
 
-    # Загружаем изображение
-    image = Image.open(image_path).convert("RGB")
+    logger.info(
+        f"Запрос к Ollama: model={model_name}, image_size={len(image_bytes)} bytes"
+    )
 
     start = time.time()
 
-    # Прогоняем через пайплайн
-    inputs = processor(images=image, return_tensors="pt").to(device)
-
-    with torch.no_grad():
-        generated_ids = model.generate(
-            **inputs,
-            max_new_tokens=50,
-            num_beams=5,
-            early_stopping=True,
+    try:
+        response = httpx.post(
+            f"{settings.OLLAMA_URL}/api/generate",
+            json={
+                "model": model_name,
+                "prompt": full_prompt,
+                "images": [image_b64],
+                "stream": False,
+                "options": {
+                    "temperature": 0.4,
+                    "num_predict": 150,
+                    "top_p": 0.9,
+                },
+            },
+            timeout=settings.OLLAMA_TIMEOUT,
         )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Ollama HTTP {e.response.status_code}: {e.response.text}")
+        raise RuntimeError(f"Ollama вернула ошибку: {e.response.status_code}")
+    except httpx.TimeoutException:
+        logger.error(f"Ollama не ответила за {settings.OLLAMA_TIMEOUT}s")
+        raise RuntimeError("Превышено время ожидания генерации")
 
-    caption = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+    data = response.json()
+    caption = data.get("response", "").strip()
 
     processing_time_ms = int((time.time() - start) * 1000)
+    logger.info(
+        f"Генерация завершена за {processing_time_ms}ms, "
+        f"длина текста: {len(caption)} символов"
+    )
 
     return {
         "caption": caption,

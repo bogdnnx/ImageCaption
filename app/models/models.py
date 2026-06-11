@@ -48,7 +48,7 @@ class Image(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-
+    image_hash: Mapped[str] = mapped_column(index=True,nullable=True)
     owner_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
     )
@@ -66,6 +66,7 @@ class Caption(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)  # ← новое
     model_name: Mapped[str] = mapped_column(String(100))
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus), default=TaskStatus.PENDING
@@ -83,4 +84,5 @@ class Caption(Base):
     image_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("images.id", ondelete="CASCADE")
     )
+    cache_key: Mapped[str] = mapped_column(String(100),index=True,nullable=True)
     image: Mapped["Image"] = relationship(back_populates="captions")

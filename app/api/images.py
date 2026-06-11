@@ -13,9 +13,13 @@ from app.models.models import User, Image, Caption, TaskStatus
 from app.schemas.schemas import ImageResponse, ImageWithCaptions, CaptionResponse, CaptionRequest
 from app.tasks.caption_task import generate_caption_task
 
+from app.utils.image_hash import compute_image_hash,cache_key
+
+
 router = APIRouter(prefix="/api/images", tags=["images"])
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
 
 
 @router.post("/upload", response_model=ImageResponse, status_code=status.HTTP_201_CREATED)
@@ -33,6 +37,7 @@ async def upload_image(
 
     # Читаем содержимое и проверяем размер
     content = await file.read()
+    image_hash = compute_image_hash(content)
     if len(content) > settings.max_file_size_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -55,6 +60,7 @@ async def upload_image(
         file_size=len(content),
         mime_type=file.content_type,
         owner_id=current_user.id,
+        image_hash=image_hash
     )
     db.add(image)
     await db.commit()
@@ -118,7 +124,6 @@ async def delete_image(
     await db.commit()
 
 
-# ── Caption endpoints ─────────────────────────────────
 
 @router.post("/{image_id}/caption", response_model=CaptionResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_caption(
@@ -127,7 +132,7 @@ async def create_caption(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Создаёт задачу на генерацию описания. Возвращает 202 — обработка в Celery."""
+    """Создаёт задачу на генерацию описания. Возвращает 202 - обработка в Celery."""
     result = await db.execute(
         select(Image).where(Image.id == image_id, Image.owner_id == current_user.id)
     )
@@ -137,20 +142,46 @@ async def create_caption(
 
     model_name = body.model_name or settings.MODEL_NAME
 
+    key = cache_key(image.image_hash, body.user_prompt, model_name)
+
+    cached = await db.execute(
+        select(Caption).where(
+            Caption.cache_key == key,
+            Caption.status == TaskStatus.COMPLETED,
+        ).limit(1)
+    )
+    cached = cached.scalar_one_or_none()
+    if cached:
+        # описание уже есть - создаём новую запись сразу в COMPLETED, без Celery
+        caption = Caption(
+            image_id=image.id,
+            model_name=model_name,
+            user_prompt=body.user_prompt,
+            status=TaskStatus.COMPLETED,
+            text=cached.text,
+            cache_key=key,
+        )
+        db.add(caption)
+        await db.commit()
+        await db.refresh(caption)
+        return caption
+
     caption = Caption(
         image_id=image.id,
         model_name=model_name,
+        user_prompt=body.user_prompt,
         status=TaskStatus.PENDING,
+        cache_key=key
     )
     db.add(caption)
     await db.commit()
     await db.refresh(caption)
 
-    # Отправляем задачу в Celery
     task = generate_caption_task.delay(
         caption_id=str(caption.id),
         image_path=image.file_path,
         model_name=model_name,
+        user_prompt=body.user_prompt,
     )
 
     caption.celery_task_id = task.id

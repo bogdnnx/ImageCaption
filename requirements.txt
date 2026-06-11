@@ -14,9 +14,6 @@ celery==5.4.0
 redis==5.1.0
 
 # ML / Vision
-transformers==4.44.0
-tokenizers==0.19.1
-torch==2.4.0
 Pillow==10.4.0
 
 # Storage

@@ -3,4 +3,6 @@ name = "imagecaption"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "celery-types>=0.26.0",
+]
